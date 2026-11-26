@@ -41,7 +41,11 @@ export default function Breaker() {
           <thead><tr><th>通道</th><th>动作</th><th>投递单</th><th>时间</th><th>备注</th></tr></thead>
           <tbody>
             {events.map((e) => (
-              <tr key={e.编号}><td>{e.通道}</td><td>{e.动作}</td><td>{e.投递单 || '-'}</td><td>{e.时间}</td><td>{e.备注}</td></tr>
+              <tr key={e.编号} className={e.动作 === '双挂硬拒' ? 'row-refused' : ''}>
+                <td>{e.通道}</td>
+                <td>{e.动作 === '双挂硬拒' ? <span className="tag tag-refuse">{e.动作}</span> : e.动作}</td>
+                <td>{e.投递单 || '-'}</td><td>{e.时间}</td><td>{e.备注}</td>
+              </tr>
             ))}
           </tbody>
         </table>

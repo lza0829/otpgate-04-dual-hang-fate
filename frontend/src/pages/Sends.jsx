@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 
+const REFUSED = '双挂拒投'
+
 export default function Sends() {
   const [rows, setRows] = useState([])
   const [phone, setPhone] = useState('139****6602')
@@ -13,14 +15,21 @@ export default function Sends() {
       await api('/投递单', { method: 'POST', body: JSON.stringify({ 手机掩码: phone, 场景: scene }) })
       setMsg('已创建')
       load()
-    } catch (e) { setMsg(e.message) }
+    } catch (e) {
+      // 双挂硬拒：后端 409 与库内终态同源，刷新后可见拒投单与拒投痕
+      setMsg(e.message)
+      load()
+    }
   }
   const dispatch = async (id) => {
     try {
       const r = await api(`/投递单/${id}/投递`, { method: 'POST' })
       setMsg(`投递：${r.通道}`)
       load()
-    } catch (e) { setMsg(e.message) }
+    } catch (e) {
+      setMsg(e.message)
+      load()
+    }
   }
   return (
     <div className="panel">
@@ -36,12 +45,24 @@ export default function Sends() {
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>投递单号</th><th>手机掩码</th><th>场景</th><th>状态</th><th>通道</th><th>切备通道</th><th>操作</th></tr></thead>
+          <thead><tr><th>投递单号</th><th>手机掩码</th><th>场景</th><th>状态</th><th>通道</th><th>切备通道</th><th>拒投原因</th><th>操作</th></tr></thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.编号}>
-                <td>{r.投递单号}</td><td>{r.手机掩码}</td><td>{r.场景}</td><td>{r.状态}</td><td>{r.通道}</td><td>{r.切备通道}</td>
-                <td><button type="button" onClick={() => dispatch(r.编号)} disabled={!['待投递','已切备'].includes(r.状态)}>投递</button></td>
+              <tr key={r.编号} className={r.状态 === REFUSED ? 'row-refused' : ''}>
+                <td>{r.投递单号}</td><td>{r.手机掩码}</td><td>{r.场景}</td>
+                <td>
+                  {r.状态}
+                  {r.状态 === REFUSED && <span className="tag tag-refuse">硬拒</span>}
+                </td>
+                <td>{r.通道}</td><td>{r.切备通道}</td>
+                <td className="bad">{r.拒投原因 || '-'}</td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => dispatch(r.编号)}
+                    disabled={!['待投递', '已切备'].includes(r.状态)}
+                  >投递</button>
+                </td>
               </tr>
             ))}
           </tbody>

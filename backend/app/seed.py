@@ -27,7 +27,6 @@ def seed_if_empty() -> None:
         conn.execute(
             """
             INSERT INTO settings(key, value) VALUES
-              ('允许双挂硬投', '否'),
               ('熔断后自动探测', '是'),
               ('回执晚到可改写', '是')
             """

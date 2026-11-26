@@ -22,7 +22,8 @@ def get_policy():
 def put_policy(body: PolicyBody):
     if body.模式 not in ("权重", "强制主路", "强制备路"):
         raise HTTPException(400, "模式非法")
-    with db() as conn:
+    # 与投递争用同一把写锁：翻转期间投递要么读到旧规则、要么读到新规则，不会双结局
+    with db(exclusive=True) as conn:
         conn.execute(
             "UPDATE route_policy SET mode=?, updated_at=? WHERE id=1",
             (body.模式, now_str()),

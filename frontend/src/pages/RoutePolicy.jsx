@@ -17,6 +17,7 @@ export default function RoutePolicy() {
   return (
     <div className="panel">
       <h2>择路</h2>
+      <p className="msg">渠规翻转与投递按钮走同一把写锁，争用串行收口，同一验码单只有一个结局</p>
       <div className="row">
         <select value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="权重">权重</option>

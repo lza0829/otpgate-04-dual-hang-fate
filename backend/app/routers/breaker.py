@@ -2,7 +2,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.db import db, rows_to_list
-from app.services.common import audit, get_setting, now_str
+from app.services.common import audit, now_str
+from app.services import dispatch as gate
 
 router = APIRouter(tags=["熔断"])
 
@@ -38,7 +39,8 @@ def list_breaks():
 
 @router.post("/投递单/{sid}/失败")
 def mark_fail(sid: int, body: FailBody):
-    with db() as conn:
+    reject_payload = None
+    with db(exclusive=True) as conn:
         s = conn.execute("SELECT * FROM sends WHERE id=?", (sid,)).fetchone()
         if not s:
             raise HTTPException(404, "投递单不存在")
@@ -48,53 +50,53 @@ def mark_fail(sid: int, body: FailBody):
         fails = ch["consecutive_fails"] + 1
         conn.execute("UPDATE channels SET consecutive_fails=? WHERE id=?", (fails, ch["id"]))
         tripped = fails >= ch["fail_threshold"]
-        if tripped:
-            conn.execute("UPDATE channels SET status='熔断中' WHERE id=?", (ch["id"],))
+        if not tripped:
             conn.execute(
-                "INSERT INTO break_events(channel_id, action, send_id, created_at, note) VALUES (?, '熔断', ?, ?, ?)",
-                (ch["id"], sid, now_str(), body.备注),
+                "UPDATE sends SET status='已失败', finished_at=? WHERE id=?",
+                (now_str(), sid),
             )
+            audit(conn, "熔断", sid, "失败", body.备注)
+            return {"结果": "已失败", "连续失败": fails, "已熔断": False}
+
+        # 达阈值：本路熔断
+        conn.execute("UPDATE channels SET status='熔断中' WHERE id=?", (ch["id"],))
+        conn.execute(
+            "INSERT INTO break_events(channel_id, action, send_id, created_at, note) VALUES (?, '熔断', ?, ?, ?)",
+            (ch["id"], sid, now_str(), body.备注),
+        )
+        backup = conn.execute(
+            "SELECT * FROM channels WHERE role='备路' AND status='启用' AND id<>? LIMIT 1",
+            (ch["id"],),
+        ).fetchone()
+        if not backup:
             backup = conn.execute(
-                "SELECT * FROM channels WHERE role='备路' AND status='启用' AND id<>? LIMIT 1",
+                "SELECT * FROM channels WHERE status='启用' AND id<>? ORDER BY weight DESC LIMIT 1",
                 (ch["id"],),
             ).fetchone()
-            if not backup:
-                backup = conn.execute(
-                    "SELECT * FROM channels WHERE status='启用' AND id<>? ORDER BY weight DESC LIMIT 1",
-                    (ch["id"],),
-                ).fetchone()
-            if backup:
-                conn.execute(
-                    """
-                    UPDATE sends SET status='已切备', failover_channel_id=?, finished_at=? WHERE id=?
-                    """,
-                    (backup["id"], now_str(), sid),
-                )
-                conn.execute(
-                    "INSERT INTO break_events(channel_id, action, send_id, created_at, note) VALUES (?, '切备', ?, ?, ?)",
-                    (backup["id"], sid, now_str(), f"自 {ch['name']} 切至 {backup['name']}"),
-                )
-                audit(conn, "熔断", sid, "切备", backup["name"])
-                return {"结果": "已切备", "备通道": backup["name"], "原通道熔断": True}
-            allow = get_setting(conn, "允许双挂硬投", "否")
-            if allow != "是":
-                conn.execute(
-                    "UPDATE sends SET status='已失败', finished_at=? WHERE id=?",
-                    (now_str(), sid),
-                )
-                audit(conn, "熔断", sid, "双挂失败", body.备注)
-                return {"结果": "已失败", "原因": "无可用备通道"}
-        conn.execute(
-            "UPDATE sends SET status='已失败', finished_at=? WHERE id=?",
-            (now_str(), sid),
-        )
-        audit(conn, "熔断", sid, "失败", body.备注)
-    return {"结果": "已失败", "连续失败": fails, "已熔断": tripped}
+        if backup:
+            # 单路熔断切备：另立的命运，不属双挂
+            conn.execute(
+                """
+                UPDATE sends SET status='已切备', failover_channel_id=?, finished_at=? WHERE id=?
+                """,
+                (backup["id"], now_str(), sid),
+            )
+            conn.execute(
+                "INSERT INTO break_events(channel_id, action, send_id, created_at, note) VALUES (?, '切备', ?, ?, ?)",
+                (backup["id"], sid, now_str(), f"自 {ch['name']} 切至 {backup['name']}"),
+            )
+            audit(conn, "熔断", sid, "切备", backup["name"])
+            return {"结果": "已切备", "备通道": backup["name"], "原通道熔断": True}
+
+        # 无启用备通道 => 主备双挂：与投递写口同一个硬拒终态、同一套留痕
+        reject_payload = gate.double_down_after_break(conn, sid, s["serial"], "熔断无备")
+    # 事务提交后再转 409，保证硬拒事实落库不被回滚
+    raise HTTPException(409, reject_payload)
 
 
 @router.post("/通道/{cid}/恢复")
 def recover(cid: int):
-    with db() as conn:
+    with db(exclusive=True) as conn:
         row = conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
         if not row:
             raise HTTPException(404, "通道不存在")

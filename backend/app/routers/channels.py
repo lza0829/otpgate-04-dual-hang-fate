@@ -35,7 +35,8 @@ def list_channels():
 
 @router.patch("/通道/{cid}")
 def patch_channel(cid: int, body: ChannelPatch):
-    with db() as conn:
+    # 启停灯与投递争用同一把写锁：灯翻与投递不可能各说各话
+    with db(exclusive=True) as conn:
         row = conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
         if not row:
             raise HTTPException(404, "通道不存在")

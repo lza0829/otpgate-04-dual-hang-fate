@@ -43,10 +43,13 @@ def list_receipts():
 def add_receipt(sid: int, body: ReceiptBody):
     if body.结果 not in ("成功", "失败"):
         raise HTTPException(400, "结果非法")
-    with db() as conn:
+    with db(exclusive=True) as conn:
         s = conn.execute("SELECT * FROM sends WHERE id=?", (sid,)).fetchone()
         if not s:
             raise HTTPException(404, "投递单不存在")
+        # 双挂拒投是终态：硬拒的单子永不进投递中/已送达，任何回执都不得改写
+        if s["status"] == "双挂拒投":
+            raise HTTPException(400, "双挂拒投终态不可写回执（系统拒投回执已留痕）")
         ch_id = s["failover_channel_id"] or s["channel_id"]
         if not ch_id:
             raise HTTPException(400, "无通道")
@@ -58,7 +61,9 @@ def add_receipt(sid: int, body: ReceiptBody):
             (sid, ch_id, body.结果, body.厂商码, now_str()),
         )
         allow_late = get_setting(conn, "回执晚到可改写", "是")
-        if s["status"] in ("投递中", "已切备") or (allow_late == "是" and s["status"] in ("已失败", "已送达")):
+        if s["status"] in ("投递中", "已切备") or (
+            allow_late == "是" and s["status"] in ("已失败", "已送达")
+        ):
             new_status = "已送达" if body.结果 == "成功" else "已失败"
             conn.execute(
                 "UPDATE sends SET status=?, finished_at=? WHERE id=?",
